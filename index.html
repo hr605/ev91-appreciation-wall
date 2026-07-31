@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>EV91 Appreciation Wall</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root{
     --bg: #0d1420;
@@ -11,12 +12,11 @@
     --line: #223049;
     --ink: #e8edf5;
     --ink-dim: #8fa1bd;
-    --accent: #35c98c;      /* pharma-green, matches ops dashboard */
+    --accent: #35c98c;
     --accent-dim: #1f7a56;
-    --amber: #e8a33d;       /* recognition highlight */
-    --rx-paper: #f4ead9;    /* prescription-pad card color */
+    --amber: #e8a33d;
+    --rx-paper: #f4ead9;
     --rx-ink: #2b2118;
-
   }
   *{box-sizing:border-box;}
   body{
@@ -115,7 +115,7 @@
   }
   .cat-chip.active{ color:#08111f; border-color:transparent; font-weight:700; }
 
-  .submit-row{ display:flex; justify-content:flex-end; }
+  .submit-row{ display:flex; justify-content:flex-end; gap:8px; }
   button.primary{
     background:var(--accent);
     color:#08111f;
@@ -127,6 +127,13 @@
     font-size:13px;
   }
   button.primary:disabled{ opacity:0.4; cursor:not-allowed; }
+  .status-msg{
+    font-size:12px;
+    color:var(--ink-dim);
+    text-align:right;
+  }
+  .status-msg.error{ color:#ff6b6b; }
+  .status-msg.success{ color:var(--accent); }
 
   .filters{
     display:flex;
@@ -259,7 +266,11 @@
       </div>
     </div>
     <div class="submit-row">
-      <button class="primary" id="postBtn" disabled>Post to wall</button>
+      <div style="flex:1;"></div>
+      <div>
+        <div class="status-msg" id="statusMsg"></div>
+        <button class="primary" id="postBtn" disabled>Post to wall</button>
+      </div>
     </div>
   </div>
 
@@ -279,9 +290,15 @@
   </div>
 </main>
 
-<footer>Shared board — visible to everyone with this link. Data persists across sessions.</footer>
+<footer>Shared board — visible to everyone with this link. Data persists in real-time.</footer>
 
 <script>
+const SUPABASE_URL = 'https://dlhlrogukmtxfikkplew.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_KWo3MvaoftlI_v2g0SvXFQ_P2ZdRs7_';
+
+const { createClient } = window.supabase;
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 const CATEGORIES = [
   { id:"rent",        label:"Max rent collected",        color:"#2e9e6b" },
   { id:"onboard",     label:"Max riders onboarded",       color:"#3d8bfd" },
@@ -310,6 +327,7 @@ const msg = document.getElementById('msg');
 const wall = document.getElementById('wall');
 const filterCat = document.getElementById('filterCat');
 const sortBy = document.getElementById('sortBy');
+const statusMsg = document.getElementById('statusMsg');
 
 function buildCategoryUI(){
   catPicker.innerHTML = CATEGORIES.map(c =>
@@ -340,14 +358,13 @@ function validate(){
 }
 
 function tilt(id){
-  // deterministic small tilt per post so it doesn't shift on re-render
   let hash = 0;
   for(const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) % 1000;
-  return ((hash % 60) - 30) / 20; // -1.5deg .. 1.5deg
+  return ((hash % 60) - 30) / 20;
 }
 
 function timeAgo(ts){
-  const diff = Date.now() - ts;
+  const diff = Date.now() - new Date(ts).getTime();
   const mins = Math.floor(diff/60000);
   if(mins < 1) return "just now";
   if(mins < 60) return mins + "m ago";
@@ -359,50 +376,75 @@ function timeAgo(ts){
 
 async function loadPosts(){
   try{
-    const stored = localStorage.getItem('appreciation-posts');
-    posts = stored ? JSON.parse(stored) : [];
+    const { data, error } = await supabase
+      .from('appreciation_posts')
+      .select('*')
+      .order('created_at', { ascending: false });
+    
+    if(error) throw error;
+    posts = data || [];
   }catch(e){
-    posts = [];
+    console.error('Load failed:', e);
+    statusMsg.textContent = 'Error loading posts';
+    statusMsg.classList.add('error');
   }
   render();
-}
-
-async function savePosts(){
-  try{
-    localStorage.setItem('appreciation-posts', JSON.stringify(posts));
-  }catch(e){
-    console.error('Save failed', e);
-  }
 }
 
 async function addPost(){
-  const post = {
-    id: 'p' + Date.now() + Math.random().toString(36).slice(2,7),
-    from: fromName.value.trim(),
-    to: toName.value.trim(),
-    store: store.value.trim(),
-    text: msg.value.trim(),
-    cat: selectedCat,
-    cheers: 0,
-    cheeredByMe: false,
-    ts: Date.now()
-  };
-  posts.unshift(post);
-  await savePosts();
-  fromName.value = ''; toName.value = ''; store.value = ''; msg.value = '';
-  catPicker.querySelectorAll('.cat-chip').forEach(c => c.classList.remove('active'));
-  selectedCat = null;
-  validate();
-  render();
+  postBtn.disabled = true;
+  statusMsg.textContent = 'Posting...';
+  statusMsg.classList.remove('error', 'success');
+  
+  try{
+    const { error } = await supabase
+      .from('appreciation_posts')
+      .insert([{
+        from_name: fromName.value.trim(),
+        to_name: toName.value.trim(),
+        team_location: store.value.trim(),
+        message: msg.value.trim(),
+        category: selectedCat,
+        cheers: 0
+      }]);
+    
+    if(error) throw error;
+    
+    fromName.value = ''; toName.value = ''; store.value = ''; msg.value = '';
+    catPicker.querySelectorAll('.cat-chip').forEach(c => c.classList.remove('active'));
+    selectedCat = null;
+    statusMsg.textContent = 'Posted! 🎉';
+    statusMsg.classList.add('success');
+    setTimeout(() => { statusMsg.textContent = ''; }, 3000);
+    
+    await loadPosts();
+  }catch(e){
+    console.error('Post failed:', e);
+    statusMsg.textContent = 'Error posting. Try again.';
+    statusMsg.classList.add('error');
+  }finally{
+    validate();
+  }
 }
 
 async function toggleCheer(id){
-  const p = posts.find(x => x.id === id);
-  if(!p) return;
-  if(p.cheeredByMe){ p.cheers = Math.max(0, p.cheers - 1); p.cheeredByMe = false; }
-  else { p.cheers += 1; p.cheeredByMe = true; }
-  await savePosts();
-  render();
+  try{
+    const post = posts.find(p => p.id === id);
+    if(!post) return;
+    
+    const newCheers = post.cheered ? post.cheers - 1 : post.cheers + 1;
+    const { error } = await supabase
+      .from('appreciation_posts')
+      .update({ cheers: newCheers })
+      .eq('id', id);
+    
+    if(error) throw error;
+    post.cheers = newCheers;
+    post.cheered = !post.cheered;
+    render();
+  }catch(e){
+    console.error('Cheer failed:', e);
+  }
 }
 
 postBtn.addEventListener('click', addPost);
@@ -411,13 +453,13 @@ sortBy.addEventListener('change', render);
 
 function render(){
   document.getElementById('statTotal').textContent = posts.length;
-  const weekAgo = Date.now() - 7*24*60*60*1000;
-  document.getElementById('statWeek').textContent = posts.filter(p => p.ts > weekAgo).length;
+  const weekAgo = new Date(Date.now() - 7*24*60*60*1000);
+  document.getElementById('statWeek').textContent = posts.filter(p => new Date(p.created_at) > weekAgo).length;
 
   let list = posts.slice();
-  if(filterCat.value !== 'all') list = list.filter(p => p.cat === filterCat.value);
+  if(filterCat.value !== 'all') list = list.filter(p => p.category === filterCat.value);
   if(sortBy.value === 'cheers') list.sort((a,b) => b.cheers - a.cheers);
-  else list.sort((a,b) => b.ts - a.ts);
+  else list.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
 
   if(list.length === 0){
     wall.innerHTML = '<div class="empty"><b>No shout-outs yet.</b><br>Be the first — name what someone actually did.</div>';
@@ -426,12 +468,12 @@ function render(){
 
   wall.innerHTML = list.map(p => `
     <div class="card" style="--tilt:${tilt(p.id)}deg">
-      <span class="card-tag" style="background:${CAT_COLORS[p.cat] || '#888'}">${CAT_LABELS[p.cat] || p.cat}</span>
-      <div class="card-to">${escapeHtml(p.to)} ${p.store ? `<span>· ${escapeHtml(p.store)}</span>` : ''}</div>
-      <div class="card-msg">${escapeHtml(p.text)}</div>
+      <span class="card-tag" style="background:${CAT_COLORS[p.category] || '#888'}">${CAT_LABELS[p.category] || p.category}</span>
+      <div class="card-to">${escapeHtml(p.to_name)} ${p.team_location ? `<span>· ${escapeHtml(p.team_location)}</span>` : ''}</div>
+      <div class="card-msg">${escapeHtml(p.message)}</div>
       <div class="card-footer">
-        <span>— ${escapeHtml(p.from)} · ${timeAgo(p.ts)}</span>
-        <button class="cheer-btn ${p.cheeredByMe ? 'cheered' : ''}" onclick="toggleCheer('${p.id}')">👏 ${p.cheers}</button>
+        <span>— ${escapeHtml(p.from_name)} · ${timeAgo(p.created_at)}</span>
+        <button class="cheer-btn ${p.cheered ? 'cheered' : ''}" onclick="toggleCheer(${p.id})">👏 ${p.cheers}</button>
       </div>
     </div>
   `).join('');
@@ -444,6 +486,14 @@ function escapeHtml(str){
 }
 
 loadPosts();
+
+// Real-time updates
+supabase
+  .channel('appreciation_posts')
+  .on('postgres_changes', { event: '*', schema: 'public', table: 'appreciation_posts' }, (payload) => {
+    loadPosts();
+  })
+  .subscribe();
 </script>
 
 </body>
